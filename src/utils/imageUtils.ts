@@ -16,7 +16,7 @@ export const ApprovedDomainsFormatted: string = APPROVED_DOMAINS.map(
 
 
 //FIXME: We ought to only upload a logo if we don't have one already (how to handle the nonprofit changing their logo then?)
-export async function uploadNonprofitImage(ctx: Context, imageUrl: string): Promise<MediaAsset | null> {
+export async function uploadNonprofitImage(ctx: Pick<Context, 'media'>, imageUrl: string): Promise<MediaAsset | null> {
     try {
         return await ctx.media.upload({
             url: imageUrl,
@@ -115,4 +115,30 @@ export class ImageManager {
         const cachedUrl = await this.ctx.redis.get(cacheKey);
         return cachedUrl ? cachedUrl : null;
     }
+}
+
+export async function isRedditImageValid(imageUrl: string): Promise<boolean> {
+    try {
+      const response = await fetch(imageUrl, {
+        method: 'HEAD',
+      });
+  
+      // Check for redirects
+      if (response.redirected) {
+        return false; // Redirect detected
+      }
+  
+      // Check content type
+      const contentType = response.headers.get('content-type');
+      return response.ok && contentType?.startsWith('image/') || false;
+    } catch (error) {
+      console.error('Error checking Reddit image validity:', error);
+      return false;
+    }
+  }
+
+export async function reuploadCoverImage(ctx: Context, cloudinaryId: string): Promise<string | null> {
+  const imageManager = new ImageManager(ctx);
+  const newImageUrl = await imageManager.getImageUrl(cloudinaryId, 1200); // Use desktop resolution
+  return newImageUrl;
 }

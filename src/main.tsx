@@ -5,7 +5,7 @@ import { Currency, FundraiserCreationResponse, type EveryNonprofitInfo } from '.
 import { createFundraiser, fetchNonprofits, populateNonprofitSelect, fetchFundraiserRaisedDetails, fetchExistingFundraiserDetails } from './sources/Every.js';
 import { CachedForm } from './utils/CachedForm.js';
 import { TypeKeys } from './utils/typeHelpers.js';
-import { fetchPostsToUpdate, setCachedForm, getCachedForm, addOrUpdatePostInRedis, removePostAndFormFromRedis, removePostSubscriptionFromRedis } from './utils/Redis.js';
+import { fetchPostsToUpdate, setCachedForm, getCachedForm, addOrUpdatePostInRedis, removePostAndFormFromRedis, removePostSubscriptionFromRedis, updateCoverImageUrl } from './utils/Redis.js';
 import { FundraiserPost } from './components/Fundraiser.js';
 import { getEveryPublicKey, getEveryPrivateKey } from './utils/keyManagement.js';
 import { generateDateOptions } from './utils/dateUtils.js';
@@ -13,6 +13,7 @@ import { convertToFormData } from './utils/formUtils.js';
 import { existingFundraiserForm } from './forms/ExistingFundraiserForm.js';
 import { updateCachedFundraiserDetails, sendFundraiserUpdates } from './utils/renderUtils.js';
 import { getFundraiserSummary, validateAndCreateJob } from './utils/jobUtils.js';
+import { isRedditImageValid, uploadNonprofitImage, generateCloudinaryURL } from './utils/imageUtils.js';
 
 Devvit.configure({
   redditAPI: true,
@@ -431,13 +432,90 @@ Devvit.addSchedulerJob({
   },
 });
 
+Devvit.addSchedulerJob({
+  name: 'check_cover_image_validity',
+  onRun: async (_, context) => {
+    const redis = context.redis;
+    let postsToUpdate;
+    try {
+      postsToUpdate = await fetchPostsToUpdate(redis);
+    } catch (error) {
+      console.error('Error fetching posts to update:', error);
+      return;
+    }
+    async function sendCoverImageUpdate(postId: string, newRedditUrl: string) {
+      await context.realtime.send('fundraiser_updates', {
+        postId: postId,
+        updatedCoverImage: {
+      coverImageRedditUrl: newRedditUrl
+    }
+  });
+}
+    for (const postId of postsToUpdate) {
+      let cachedForm;
+      try {
+        cachedForm = await getCachedForm(context, postId);
+      } catch (error) {
+        console.error(`Error retrieving cached form for postId: ${postId}`, error);
+        continue;
+      }
+
+      if (!cachedForm) {
+        console.error(`No cached form found for postId: ${postId}`);
+        continue;
+      }
+
+      const fundraiserInfo = cachedForm.getAllProps(TypeKeys.everyExistingFundraiserInfo);
+      const nonprofitInfo = cachedForm.getAllProps(TypeKeys.everyNonprofitInfo);
+      if (!fundraiserInfo || !nonprofitInfo) {
+        continue;
+      }
+
+      const currentRedditUrl = fundraiserInfo.coverImageCloudinaryId;
+      if (currentRedditUrl) {
+        const isValid = await isRedditImageValid(currentRedditUrl);
+        if (!isValid) {
+          try {
+            const everyPublicKey = await getEveryPublicKey(context);
+            const updatedFundraiserDetails = await fetchExistingFundraiserDetails(
+              nonprofitInfo.nonprofitID,
+              fundraiserInfo.id,
+              everyPublicKey
+            );
+
+            if (updatedFundraiserDetails && updatedFundraiserDetails.fundraiserInfo.coverImageCloudinaryId) {
+              const cloudinaryUrl = generateCloudinaryURL(updatedFundraiserDetails.fundraiserInfo.coverImageCloudinaryId, 'w_1200');
+              const newMediaAsset = await uploadNonprofitImage(context, cloudinaryUrl);
+              
+              if (newMediaAsset && newMediaAsset.mediaUrl) {
+                // Update the cached form with the new Reddit URL
+                cachedForm.setProp('everyExistingFundraiserInfo', 'coverImageCloudinaryId', newMediaAsset.mediaUrl);
+                await setCachedForm(context, postId, cachedForm);
+
+                // Send only the new Reddit URL to update the UI
+                await sendCoverImageUpdate(postId, newMediaAsset.mediaUrl);
+                console.log(`Updated cover image for post: ${postId}`);
+              } else {
+                console.error(`Failed to reupload image for post: ${postId}`);
+              }
+            }
+          } catch (error) {
+            console.error(`Error updating cover image for post: ${postId}`, error);
+          }
+        }
+      }
+    }
+  },
+});
+
 Devvit.addTrigger({
   event: 'AppInstall',
   onEvent: async (_, context) => {
     const jobsToSchedule = [
       { cron: '*/10 * * * * *', name: 'update_fundraiser_posts' },
       { cron: '* * * * *', name: 'update_fundraiser_descriptions' },
-      { cron: '0 0 * * *', name: 'send_daily_fundraiser_summary' }
+      { cron: '0 0 * * *', name: 'send_daily_fundraiser_summary' },
+      { cron: '*/10 * * * * *', name: 'check_cover_image_validity' } // Run every 10 seconds
     ];
 
     for (const job of jobsToSchedule) {
@@ -474,7 +552,8 @@ Devvit.addTrigger({
       const jobsToSchedule = [
         { cron: '*/10 * * * * *', name: 'update_fundraiser_posts' },
         { cron: '* * * * *', name: 'update_fundraiser_descriptions' },
-        { cron: '0 0 * * *', name: 'send_daily_fundraiser_summary' }
+        { cron: '0 0 * * *', name: 'send_daily_fundraiser_summary' },
+        { cron: '*/10 * * * * *', name: 'check_cover_image_validity' } 
       ];
 
       for (const job of jobsToSchedule) {

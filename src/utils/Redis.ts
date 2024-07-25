@@ -2,6 +2,7 @@ import { Context, RedisClient } from '@devvit/public-api';
 import { CachedForm } from './CachedForm.js';
 import { EveryFundraiserRaisedDetails } from '../types/index.js';
 import { RedisKey } from '../types/enums.js'; // Import the enum
+import { TypeKeys } from './typeHelpers.js';
 
 /**
  * Creates a unique Redis key for a user based on their current subreddit.
@@ -168,3 +169,18 @@ export async function fetchPostsToUpdate(redis: RedisClient): Promise<string[]> 
     return postsToUpdate;
 }
 
+/**
+ * Updates the cover image URL for a fundraiser post in Redis.
+ * 
+ * @param {Context} ctx - The context containing the Redis client.
+ * @param {string} postId - The ID of the post.
+ * @param {string} newImageUrl - The new cover image URL.
+ * @returns {Promise<void>}
+ */
+export async function updateCoverImageUrl(ctx: Pick<Context, "redis">, postId: string, newImageUrl: string): Promise<void> {
+    const cachedForm = await getCachedForm(ctx, postId);
+    if (cachedForm) {
+        cachedForm.setProp('everyExistingFundraiserInfo', 'coverImageCloudinaryId', newImageUrl);
+        await setCachedForm(ctx, postId, cachedForm);
+    }
+}
